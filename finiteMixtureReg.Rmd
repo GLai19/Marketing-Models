@@ -1,0 +1,166 @@
+---
+title: "Finite Mixture Regression Model"
+output: html_notebook
+---
+
+```{r}
+data <- read.csv("regMixture.csv")
+
+y <- as.vector(data[,2]); hist(y, col='goldenrod1')
+
+id <-data$id ; xmat <-as.matrix(cbind(1, data[,3:4]))
+
+nind=max(id)
+
+```
+
+```{r}
+summary(data)
+```
+
+We write a function for computing the log likelihood.
+
+
+```{r}
+logLik<-function(parms, y, xmat, id){
+    
+    wt<-exp(parms[8])/(1+exp(parms[8]))
+    
+    xbeta1<-xmat%*%parms[1:3];  xbeta2<-xmat%*%parms[4:6]
+    
+    ll<-0.0
+    
+    for(i in 1:max(id)){
+        
+        sxbeta1<-subset(xbeta1, id==i); sxbeta2<-subset(xbeta2, id==i)
+        
+        sy<-subset(y, id==i)
+        
+        sum1<-sum(dnorm(sy, mean=sxbeta1, sd=exp(parms[7]), log=TRUE))
+        sum2<-sum(dnorm(sy, mean=sxbeta2, sd=exp(parms[7]), log=TRUE))
+        
+        # we need to compute log(wt*exp(sum1)+(1-wt)*exp(sum2)) Note
+        # that wt*exp(sum1) is the same as exp(log(wt))*exp(sum1) =
+        # exp(log(wt)+sum1) we compute ws1 = log(wt)+sum1, below
+        
+        ws1 <- sum1+log(wt) ;  ws2 <- sum2+log(1-wt)
+        
+        # We now need to compute log(exp(ws1)+exp(ws2)), where the exp
+        # function can lead to overflow We therefore use the
+        # log-sum-exp trick to reduce the chance of numerical problems
+        # in computing the log-likelihood. We first compute the max of
+        # ws1 and ws2, and subtract this from each of ws1 and ws2,
+        # before exponentiating these, and then add the maximum,
+        # afterwords
+        
+        m=max(ws1, ws2)
+        
+        ll<-ll+m+log(exp(ws1-m)+exp(ws2-m))
+    }
+
+   ll
+}
+```
+
+
+```{r}
+npar<-8 ; parms <-runif(npar)
+```
+
+
+We see below that using the maxLik package does not give us a proper solution. I have found that in such instances one can use another optimization routine.
+
+
+```{r}
+library("maxLik")
+mlfit <-maxLik(logLik, start=c("b11"=parms[1], "b12"=parms[2], "b13"=parms[3], "b21"=parms[4], "b22" = parms[5], "b23"= parms[6],
+                               "w"=parms[7], "sigma"=parms[8]), y=y, xmat=xmat, id=id, method="BFGS")
+
+```
+
+```{r}
+summary(mlfit)
+```
+
+We can use nlm function in R for optimization. nlm is a minimizer, so we need to pass a function that computes the negative of the log-likelihood.
+
+```{r}
+
+negLogLike <-function(parms, y, xmat, id){
+  -logLik(parms, y, xmat, id)
+}
+
+mle1<-nlm(negLogLike,  parms, y=y, xmat=xmat, id=id, hessian=T)
+```
+
+We can compute the standard errors by taking the square root of the diagonal of the hessian matrix. Note that as we are minimizing here, we work directly with the hessian and not with the negative of the hessian. 
+
+
+```{r}
+library(data.table)
+library(knitr)
+library(kableExtra)
+
+mode = mle1$estimate 
+se = sqrt(diag(solve(mle1$hessian)))
+tValue = mode/se
+ll = mle1$minimum 
+names <- c('b11', 'b12', 'b13', 'b21','b22', 'b23', 'w', 'sigma')
+
+
+parTable=data.table(Parameter=names,  Estimate=mode,SE=se,Tvalue=tValue)
+parTable %>% kable( digits =3) %>% kable_styling(bootstrap_options = "striped", full_width = F )
+```
+
+We can write a function to compute the posterior probabilities of each individual belonging to a segment.
+
+
+```{r}
+
+postProb<-function(parms, y, xmat, id){
+    
+    nind <-max(id)
+    
+    wt<-exp(parms[8])/(1+exp(parms[8]))
+    
+    xbeta1<-xmat%*%parms[1:3];  xbeta2<-xmat%*%parms[4:6]
+    
+    p<-matrix(0.0, nrow=nind, 2)
+    
+    
+    for(i in 1:nind){
+        
+        sxbeta1<-subset(xbeta1, id==i); sxbeta2<-subset(xbeta2, id==i)
+        
+        sy<-subset(y, id==i)
+        
+        sum1<-sum(dnorm(sy, mean=sxbeta1, sd=exp(parms[7]), log=TRUE))
+        sum2<-sum(dnorm(sy, mean=sxbeta2, sd=exp(parms[7]), log=TRUE))
+       
+        p[i,1] <- exp(sum1)*wt
+        p[i,2] <- exp(sum2)*(1-wt)
+        
+        den <-p[i,1]+p[i,2]
+        
+        p[i,1] <- p[i,1]/den
+        p[i,2] <- p[i,2]/den
+    }
+   p
+}
+
+```
+
+
+```{r}
+p<-postProb(mode, y, xmat, id)
+
+```
+
+Finally we can look at the results from a simple regression.
+
+
+```{r}
+lsfit<-lm(data$y ~ data$x1 + data$x2)
+summary(lsfit)
+```
+
